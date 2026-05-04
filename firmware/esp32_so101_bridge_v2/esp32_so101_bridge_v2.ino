@@ -1,27 +1,36 @@
 /**
- * ESP32 SO101 Remote Bridge v2 — Performance Optimized
+ * ESP32 SO101 Remote Bridge v3 — Bimanual Leader/Follower Dual Mode
  *
- * Key improvements over v1 (diag):
- *   1. syncWrite():  Updates Goal Position for all 6 servos in ONE bus packet
- *      (v1 sent 6 individual WritePosEx packets).
- *   2. syncRead():   Reads Present Position from all 6 servos in ONE bus round-trip
- *      (v1 called ReadPos 6 times sequentially, ~5ms each = ~30ms total).
- *      This restores get_obs latency from ~30-50ms to ~5ms, enabling smooth 30fps replay
- *      without having to skip observation on the PC side.
- *   3. TCP_NODELAY:  Disabled Nagle's algorithm on both TCP sockets so every
- *      JSON packet is flushed immediately (eliminates the "first few frames fast,
- *      then slow" TCP buffering artifact).
+ * This firmware can operate in two modes by toggling the #define below:
  *
- * Hardware:
- *   - ESP32 GPIO17 (TX) -> Waveshare RX
- *   - ESP32 GPIO18 (RX) -> Waveshare TX
- *   - 6x Feetech STS3215 servos on the bus (IDs 1-6)
+ *   FOLLOWER_MODE (default): Receives set_positions from PC and moves servos.
+ *                            Used for the arm that EXECUTES actions.
  *
- * Protocol:
- *   - TCP port 8888: PC -> ESP32 (JSON commands)
- *   - TCP port 8889: ESP32 -> PC (JSON observations)
- *   - Feetech Protocol 0 (1 Mbps, 8N1)
+ *   LEADER_MODE:             Reads servo positions and streams them to PC.
+ *                            Torque is DISABLED so human can move the arm freely.
+ *                            Used for the arm that PROVIDES actions (teleoperator).
+ *
+ * To select mode, uncomment ONE of the following lines before flashing:
  */
+
+// #define LEADER_MODE
+#define FOLLOWER_MODE
+
+#ifndef LEADER_MODE
+#ifndef FOLLOWER_MODE
+#define FOLLOWER_MODE
+#endif
+#endif
+
+// Leader mode config
+#ifdef LEADER_MODE
+const char* MODE_TAG = "[LEADER]";
+const int   LEADER_STREAM_HZ = 30;  // How often to stream positions to PC
+#endif
+
+#ifdef FOLLOWER_MODE
+const char* MODE_TAG = "[FOLLOWER]";
+#endif
 
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -189,20 +198,30 @@ void setup() {
     Serial.println("[V2] WARNING: No servos found! Check wiring/power.");
   }
 
-  // Step 3: Configure (disable torque first, then set ACC, then re-enable)
+  // Step 3: Configure motors (always needed for both modes)
   disableAllTorque();
   configureMotors();
+
+#ifdef LEADER_MODE
+  // Leader: torque stays OFF so human can move the arm freely
+  Serial.println("[LEADER] Torque DISABLED — arm is free to move");
+#else
+  // Follower: torque ON so arm holds position and executes commands
   enableAllTorque();
+#endif
 
   // Step 4: WiFi
 #ifdef USE_AP_MODE
-  Serial.print("[V2] AP mode: ");
+  Serial.print(MODE_TAG);
+  Serial.print(" AP mode: ");
   Serial.println(AP_SSID);
   WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
-  Serial.print("[V2] AP IP: ");
+  Serial.print(MODE_TAG);
+  Serial.print(" AP IP: ");
   Serial.println(WiFi.softAPIP());
 #else
-  Serial.print("[V2] WiFi: ");
+  Serial.print(MODE_TAG);
+  Serial.print(" WiFi: ");
   Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   int retries = 0;
@@ -213,10 +232,11 @@ void setup() {
   }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[V2] WiFi IP: ");
+    Serial.print(MODE_TAG);
+    Serial.print(" WiFi IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("[V2] WiFi FAILED. Releasing torque and halting.");
+    Serial.println("[FOLLOWER] WiFi FAILED. Releasing torque and halting.");
     disableAllTorque();
     while (true) { delay(1000); }
   }
@@ -225,27 +245,59 @@ void setup() {
   // Step 5: TCP servers
   serverCmd.begin();
   serverObs.begin();
-  Serial.printf("[V2] TCP CMD port %d, OBS port %d\n", PORT_CMD, PORT_OBS);
+  Serial.printf("%s TCP CMD port %d, OBS port %d\n", MODE_TAG, PORT_CMD, PORT_OBS);
 
-  Serial.println("[V2] Setup complete. Waiting for PC...\n");
+  Serial.print(MODE_TAG);
+  Serial.println(" Setup complete. Waiting for PC...\n");
+}
+
+// ===================== Send Observation Helper =====================
+void sendObservation() {
+  int poses[NUM_MOTORS];
+  bool ok = syncReadPositions(poses);
+
+  StaticJsonDocument<512> resp;
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    resp[MOTOR_NAMES[i]] = (poses[i] < 0) ? -1 : poses[i];
+  }
+  String out;
+  serializeJson(resp, out);
+  out += "\n";
+
+  if (clientObs && clientObs.connected()) {
+    clientObs.print(out);
+  }
+
+  if (!ok) {
+    Serial.print(MODE_TAG);
+    Serial.println(" WARNING: Some positions failed syncRead");
+  }
 }
 
 // ===================== Main Loop =====================
+#ifdef LEADER_MODE
+unsigned long lastStreamMs = 0;
+const unsigned long streamIntervalMs = 1000 / LEADER_STREAM_HZ;  // ~33ms for 30Hz
+#endif
+
 void loop() {
   // Accept connections
   if (!clientCmd || !clientCmd.connected()) {
     if (clientWasConnected) {
       clientWasConnected = false;
-      Serial.println("[V2] CMD client DISCONNECTED. Releasing torque.");
+      Serial.print(MODE_TAG);
+      Serial.println(" CMD client DISCONNECTED.");
+#ifdef FOLLOWER_MODE
       disableAllTorque();
+#endif
     }
     WiFiClient nc = serverCmd.available();
     if (nc) {
       clientCmd = nc;
-      // CRITICAL: Disable Nagle to eliminate TCP buffering delay
       clientCmd.setNoDelay(true);
       clientWasConnected = true;
-      Serial.println("[V2] CMD client connected: " + clientCmd.remoteIP().toString());
+      Serial.print(MODE_TAG);
+      Serial.println(" CMD client connected: " + clientCmd.remoteIP().toString());
     }
   }
   if (!clientObs || !clientObs.connected()) {
@@ -253,30 +305,61 @@ void loop() {
     if (nc) {
       clientObs = nc;
       clientObs.setNoDelay(true);
-      Serial.println("[V2] OBS client connected: " + clientObs.remoteIP().toString());
+      Serial.print(MODE_TAG);
+      Serial.println(" OBS client connected: " + clientObs.remoteIP().toString());
     }
   }
 
+#ifdef LEADER_MODE
+  // ====== LEADER MODE ======
+  // Stream positions to PC at fixed rate (LEADER_STREAM_HZ)
+  unsigned long now = millis();
+  if (clientObs && clientObs.connected() && (now - lastStreamMs >= streamIntervalMs)) {
+    lastStreamMs = now;
+    sendObservation();
+  }
+
+  // Also respond to explicit get_obs requests
+  if (clientCmd && clientCmd.connected() && clientCmd.available()) {
+    String line = clientCmd.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) return;
+
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, line);
+    if (err) return;
+
+    const char* cmd = doc["cmd"];
+    if (cmd && strcmp(cmd, "get_obs") == 0) {
+      sendObservation();
+    }
+    // Leader ignores set_positions and release_torque
+  }
+#else
+  // ====== FOLLOWER MODE ======
   // Process commands
   if (clientCmd && clientCmd.connected() && clientCmd.available()) {
     String line = clientCmd.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) return;
 
-    Serial.print("[V2] RX: ");
+    Serial.print(MODE_TAG);
+    Serial.print(" RX: ");
     Serial.println(line);
 
     StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, line);
     if (err) {
-      Serial.print("[V2] JSON error: ");
+      Serial.print(MODE_TAG);
+      Serial.print(" JSON error: ");
       Serial.println(err.c_str());
       return;
     }
 
     const char* cmd = doc["cmd"];
     if (!cmd) {
-      Serial.println("[V2] Missing 'cmd'");
+      Serial.print(MODE_TAG);
+      Serial.println(" Missing 'cmd'");
       return;
     }
 
@@ -286,38 +369,23 @@ void loop() {
       for (int i = 0; i < NUM_MOTORS; i++) {
         int val = doc["positions"][MOTOR_NAMES[i]].as<int>();
         if (val < 0 || val > 4095) {
-          Serial.printf("[V2] Invalid pos %s=%d\n", MOTOR_NAMES[i], val);
+          Serial.printf("%s Invalid pos %s=%d\n", MODE_TAG, MOTOR_NAMES[i], val);
           ok = false;
         }
         goals[i] = (uint16_t)val;
       }
       if (ok) {
         syncWritePositions(goals);
-        Serial.println("[V2] Positions sent via syncWrite");
+        Serial.print(MODE_TAG);
+        Serial.println(" Positions sent via syncWrite");
       }
     }
     else if (strcmp(cmd, "get_obs") == 0) {
-      int poses[NUM_MOTORS];
-      bool ok = syncReadPositions(poses);
-
-      StaticJsonDocument<512> resp;
-      for (int i = 0; i < NUM_MOTORS; i++) {
-        resp[MOTOR_NAMES[i]] = (poses[i] < 0) ? -1 : poses[i];
-      }
-      String out;
-      serializeJson(resp, out);
-      out += "\n";
-
-      if (clientObs && clientObs.connected()) {
-        clientObs.print(out);
-      }
-
-      if (!ok) {
-        Serial.println("[V2] WARNING: Some positions failed syncRead");
-      }
+      sendObservation();
     }
     else if (strcmp(cmd, "release_torque") == 0) {
-      Serial.println("[V2] Releasing torque...");
+      Serial.print(MODE_TAG);
+      Serial.println(" Releasing torque...");
       disableAllTorque();
       StaticJsonDocument<128> resp;
       resp["success"] = true;
@@ -330,8 +398,10 @@ void loop() {
       }
     }
     else {
-      Serial.print("[V2] Unknown cmd: ");
+      Serial.print(MODE_TAG);
+      Serial.print(" Unknown cmd: ");
       Serial.println(cmd);
     }
   }
+#endif
 }

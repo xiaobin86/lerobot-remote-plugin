@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from lerobot.robots.config import RobotConfig
+from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.cameras import CameraConfig
 
 
@@ -32,3 +33,21 @@ class RemoteSO101Config(RobotConfig):
     # SO101 and SO100 share the same "so_follower" robot name in LeRobot,
     # so their calibration files live under the "so_follower" directory.
     calibration_dir: Path | None = field(default=None, repr=False)
+
+
+@TeleoperatorConfig.register_subclass("remote_so101_leader")
+@dataclass(kw_only=True)
+class RemoteSO101LeaderConfig(TeleoperatorConfig):
+    """Configuration for remote SO101 Leader teleoperator controlled via ESP32 TCP bridge.
+
+    The Leader ESP32 streams joint positions at 30 Hz. This teleoperator
+    receives the stream and returns actions for teleoperation or recording.
+
+    Calibration is reused from the local SO101/SO100 follower.
+    """
+
+    remote_ip: str = "192.168.4.2"
+    port_obs: int = 8889
+    timeout_s: float = 5.0
+
+    use_degrees: bool = False

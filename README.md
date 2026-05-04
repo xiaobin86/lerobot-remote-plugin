@@ -7,6 +7,8 @@ Controls a physical SO101 robotic arm via an ESP32 TCP bridge, enabling `lerobot
 
 ## Architecture
 
+### Single Mode (Follower only)
+
 ```text
 ┌──────────────┐      WiFi/TCP      ┌─────────────┐      UART (1 Mbps)     ┌─────────────┐
 │   PC (LeRobot) │  ═══════════════>  │    ESP32    │  ═══════════════════>  │ Waveshare   │
@@ -16,8 +18,37 @@ Controls a physical SO101 robotic arm via an ESP32 TCP bridge, enabling `lerobot
                            Port 8888
 ```
 
-- **PC side**: A custom `Robot` subclass (`RemoteSO101`) is injected into LeRobot via the official third-party plugin mechanism — **no LeRobot source code is modified**.
-- **ESP32 side**: A lightweight Arduino firmware receives JSON commands over TCP and forwards them to the Waveshare Feetech controller board via UART (GPIO17/18).
+### Dual Mode (Bimanual Leader + Follower)
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              PC (LeRobot)                                    │
+│  ┌──────────────────┐              ┌──────────────────────────────────┐   │
+│  │  Teleoperator    │              │            Robot                  │   │
+│  │ RemoteSO101Leader│              │        RemoteSO101               │   │
+│  │  (reads leader)  │              │      (writes follower)           │   │
+│  └────────┬─────────┘              └──────────────┬───────────────────┘   │
+│           │                                        │                        │
+│           │ WiFi TCP (port 8889)                   │ WiFi TCP (port 8888)   │
+│           │ ESP32 auto-streams positions           │ PC sends set_positions │
+│           ▼                                        ▼                        │
+│  ┌──────────────────┐              ┌──────────────────────────────────┐   │
+│  │   ESP32 #1       │              │           ESP32 #2               │   │
+│  │  (LEADER mode)   │              │        (FOLLOWER mode)           │   │
+│  │  torque=OFF      │              │         torque=ON                │   │
+│  │  reads positions │              │     receives positions           │   │
+│  └────────┬─────────┘              └──────────────┬───────────────────┘   │
+│           │ UART                                 │ UART                    │
+│           ▼                                        ▼                        │
+│  ┌──────────────────┐              ┌──────────────────────────────────┐   │
+│  │   SO101 Leader   │              │        SO101 Follower            │   │
+│  │  (human moves)   │              │      (executes commands)         │   │
+│  └──────────────────┘              └──────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **PC side**: Two plugins — `RemoteSO101` (Robot, for follower) and `RemoteSO101Leader` (Teleoperator, for leader) — are injected into LeRobot via the official third-party plugin mechanism — **no LeRobot source code is modified**.
+- **ESP32 side**: A single firmware codebase compiles to either **Leader** or **Follower** mode via compile-time `#define`. Leader auto-streams joint positions; Follower receives and executes commands.
 
 ---
 
@@ -146,6 +177,55 @@ lerobot-teleoperate `
 ```
 
 > **Note**: For teleoperation, `skip_observation` defaults to `false` so the teleop loop receives real-time joint positions. The v2 firmware's `syncRead` provides ~5 ms observation latency, sufficient for 30–60 Hz teleop loops.
+
+### Bimanual Teleoperation (Leader + Follower)
+
+With **two ESP32 boards** (one for Leader, one for Follower) and the **dual-mode v3 firmware**, you can teleoperate the Follower arm by physically moving the Leader arm — both wirelessly:
+
+#### 1. Flash the ESP32s
+
+Open `firmware/esp32_so101_bridge_v2/esp32_so101_bridge_v2.ino` and set the mode at the top:
+
+**ESP32 #1 (Leader):**
+```cpp
+#define LEADER_MODE
+// #define FOLLOWER_MODE
+```
+
+**ESP32 #2 (Follower):**
+```cpp
+// #define LEADER_MODE
+#define FOLLOWER_MODE
+```
+
+Update WiFi credentials for both (or use AP mode with different SSIDs), then flash each ESP32.
+
+#### 2. Run bimanual teleoperation
+
+```powershell
+lerobot-teleoperate `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.1.102 `
+  --robot.id=black `
+  --teleop.type=remote_so101_leader `
+  --teleop.remote_ip=192.168.1.101 `
+  --teleop.id=black
+```
+
+| Argument | Meaning |
+|----------|---------|
+| `--robot.remote_ip` | Follower ESP32 IP |
+| `--teleop.remote_ip` | Leader ESP32 IP |
+| `--robot.id` / `--teleop.id` | Calibration ID (must match existing SO101 calibration) |
+
+**What happens:**
+1. Leader ESP32 continuously reads servo positions and streams them to PC at 30 Hz
+2. `RemoteSO101Leader` receives the stream and returns normalized actions
+3. LeRobot's teleop loop feeds these actions to `RemoteSO101`
+4. `RemoteSO101` denormalizes and sends them to the Follower ESP32
+5. Follower ESP32 writes positions to its servos
+
+> ⚠️ **Important**: Both Leader and Follower must use the **same calibration file** (same `id`) so that joint positions are interpreted identically. The Leader teleoperator reuses the `so_follower` calibration directory by default.
 
 ---
 
