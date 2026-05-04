@@ -167,6 +167,58 @@ void enableAllTorque() {
   }
 }
 
+// ===================== Motor Configuration =====================
+// Replicates SO101's configure() from lerobot/robots/so_follower/so_follower.py
+
+void writeByte(uint8_t id, uint8_t addr, uint8_t value) {
+  uint8_t pkt[8] = {H1, H2, id, 4, INST_WRITE, addr, value, 0};
+  pkt[7] = calcChecksum(&pkt[2], 5);
+  SERVO_SERIAL.write(pkt, 8);
+  delayMicroseconds(300);
+}
+
+void writeWord(uint8_t id, uint8_t addr, uint16_t value) {
+  uint8_t pkt[9] = {H1, H2, id, 5, INST_WRITE, addr,
+                    (uint8_t)(value & 0xFF), (uint8_t)(value >> 8), 0};
+  pkt[8] = calcChecksum(&pkt[2], 6);
+  SERVO_SERIAL.write(pkt, 9);
+  delayMicroseconds(300);
+}
+
+void configureMotors() {
+  // Disable torque before writing EPROM settings
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 0);
+    writeByte(MOTOR_IDS[i], 55, 0);
+  }
+  delay(50);
+
+  // Common settings for all motors
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    uint8_t id = MOTOR_IDS[i];
+    writeByte(id, 7, 0);     // Return_Delay_Time = 0
+    writeByte(id, 33, 0);    // Operating_Mode = POSITION
+    writeByte(id, 21, 16);   // P_Coefficient = 16
+    writeByte(id, 23, 0);    // I_Coefficient = 0
+    writeByte(id, 22, 32);   // D_Coefficient = 32
+    writeByte(id, 41, 254);  // Acceleration = 254
+    writeByte(id, 85, 254);  // Maximum_Acceleration = 254
+  }
+
+  // Gripper-specific protection (ID 6)
+  uint8_t gripperId = MOTOR_IDS[5];
+  writeWord(gripperId, 16, 500);
+  writeWord(gripperId, 28, 250);
+  writeByte(gripperId, 36, 25);
+
+  delay(50);
+
+  // Re-enable torque
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 1);
+  }
+}
+
 // ===================== WiFi Helpers =====================
 void setupWiFi() {
 #ifdef USE_AP_MODE
@@ -204,6 +256,10 @@ void setup() {
   // Enable torque on all servos so they hold position
   enableAllTorque();
   Serial.println("[SERVO] Torque enabled on all motors");
+
+  // Configure motors (PID, acceleration, operating mode)
+  configureMotors();
+  Serial.println("[SERVO] Motor configuration done (P=16, I=0, D=32, Acc=254)");
 
   // Start WiFi
   setupWiFi();

@@ -10,10 +10,23 @@
 
 // ===================== WiFi Configuration =====================
 // Option A: Station mode (connect to existing router)
-// NOTE: Chinese SSID may cause connection failure due to encoding issues.
-//       If your router uses Chinese name, switch to AP mode below.
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+//
+// For ASCII-only SSID (English letters, numbers):
+const char* WIFI_SSID     = "oppowifi";
+const char* WIFI_PASSWORD = "asdfghjkl";
+//
+// For Chinese SSID: fill in the HEX bytes of your SSID.
+// Example: SSID "上网6元一小时" in GBK/GB2312 is:
+//   C9 CF CD F8 36 D4 AA D2 BB D0 A1 CA B1
+// Uncomment and fill WIFI_SSID_HEX below, then uncomment #define USE_HEX_SSID.
+// The helper ssidHexToString() will convert it at runtime.
+// #define USE_HEX_SSID
+// const char* WIFI_SSID_HEX = "C9CFCD F836D4AAC9CFB5C8A7D2BB";
+//
+// How to get HEX bytes of your Chinese SSID:
+//   Windows CMD:  chcp 936
+//                 python -c "import sys; print(''.join('%02X'%b for b in sys.argv[1].encode('gb2312')))" "你的SSID"
+//   Python:       '上网6元一小时'.encode('gb2312').hex()
 
 // Option B: Access Point mode (ESP32 creates its own network)
 // Uncomment the line below to use AP mode (bypasses Chinese SSID issue):
@@ -114,6 +127,58 @@ void readAllPositions(uint16_t out[]) {
   }
 }
 
+// ===================== Motor Configuration =====================
+// Replicates SO101's configure() from lerobot/robots/so_follower/so_follower.py
+
+void writeByte(uint8_t id, uint8_t addr, uint8_t value) {
+  uint8_t pkt[8] = {H1, H2, id, 4, INST_WRITE, addr, value, 0};
+  pkt[7] = calcChecksum(&pkt[2], 5);
+  SERVO_SERIAL.write(pkt, 8);
+  delayMicroseconds(300);  // brief delay between packets to avoid bus collision
+}
+
+void writeWord(uint8_t id, uint8_t addr, uint16_t value) {
+  uint8_t pkt[9] = {H1, H2, id, 5, INST_WRITE, addr,
+                    (uint8_t)(value & 0xFF), (uint8_t)(value >> 8), 0};
+  pkt[8] = calcChecksum(&pkt[2], 6);
+  SERVO_SERIAL.write(pkt, 9);
+  delayMicroseconds(300);
+}
+
+void configureMotors() {
+  // Disable torque before writing EPROM settings
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 0);  // Torque off
+    writeByte(MOTOR_IDS[i], 55, 0);              // Lock = 0
+  }
+  delay(50);
+
+  // Common settings for all motors
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    uint8_t id = MOTOR_IDS[i];
+    writeByte(id, 7, 0);     // Return_Delay_Time = 0  (2us response)
+    writeByte(id, 33, 0);    // Operating_Mode = 0 (POSITION servo mode)
+    writeByte(id, 21, 16);   // P_Coefficient = 16 (reduce shakiness)
+    writeByte(id, 23, 0);    // I_Coefficient = 0
+    writeByte(id, 22, 32);   // D_Coefficient = 32
+    writeByte(id, 41, 254);  // Acceleration = 254 (max)
+    writeByte(id, 85, 254);  // Maximum_Acceleration = 254
+  }
+
+  // Gripper-specific protection (motor index 5 = ID 6)
+  uint8_t gripperId = MOTOR_IDS[5];
+  writeWord(gripperId, 16, 500);  // Max_Torque_Limit = 500 (50%)
+  writeWord(gripperId, 28, 250);  // Protection_Current = 250 (50%)
+  writeByte(gripperId, 36, 25);   // Overload_Torque = 25 (25%)
+
+  delay(50);
+
+  // Re-enable torque
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 1);
+  }
+}
+
 // ===================== Setup =====================
 void setup() {
   Serial.begin(115200);
@@ -133,13 +198,10 @@ void setup() {
   delay(200);
   Serial.println("[DIAG] UART2 initialized OK");
 
-  // Step 2: Enable torque
-  Serial.println("[DIAG] Enabling torque on all motors...");
-  for (int i = 0; i < NUM_MOTORS; i++) {
-    enableTorque(MOTOR_IDS[i]);
-    delayMicroseconds(200);
-  }
-  Serial.println("[DIAG] Torque enable packets sent");
+  // Step 2: Configure motors (PID, acceleration, operating mode)
+  Serial.println("[DIAG] Configuring all motors (PID, acceleration, mode)...");
+  configureMotors();
+  Serial.println("[DIAG] Motor configuration done");
 
   // Step 3: Read back one motor to verify bus is alive
   Serial.println("[DIAG] Probing motor ID 1...");
