@@ -279,7 +279,48 @@ void setup() {
   Serial.print("[DIAG] TCP OBS server on port ");
   Serial.println(PORT_OBS);
 
+  // Step 6: Self-test all joints (independent of PC)
+  testAllJoints();
+
   Serial.println("\n[DIAG] Setup complete. Waiting for PC client...\n");
+}
+
+/**
+ * Self-test: move every joint through a large range.
+ * This runs automatically after boot so you can verify hardware
+ * without needing a PC connection.
+ */
+void testAllJoints() {
+  Serial.println("\n[TEST] ===== Joint Self-Test =====");
+  Serial.println("[TEST] Watch your arm! It should move in 3 steps.");
+  delay(2000);
+
+  // Step 1: Center all joints
+  Serial.println("[TEST] Step 1/3: Moving to CENTER (2048)...");
+  uint16_t center[6] = {2048, 2048, 2048, 2048, 2048, 2048};
+  syncWritePositions(center);
+  delay(1500);
+
+  // Step 2: Move to low positions
+  Serial.println("[TEST] Step 2/3: Moving to LOW (1024)...");
+  uint16_t low[6] = {1024, 1024, 1024, 1024, 1024, 1024};
+  syncWritePositions(low);
+  delay(1500);
+
+  // Step 3: Move to high positions
+  Serial.println("[TEST] Step 3/3: Moving to HIGH (3072)...");
+  uint16_t high[6] = {3072, 3072, 3072, 3072, 3072, 3072};
+  syncWritePositions(high);
+  delay(1500);
+
+  // Return to center
+  Serial.println("[TEST] Returning to CENTER...");
+  syncWritePositions(center);
+  delay(1500);
+
+  Serial.println("[TEST] Self-test complete.");
+  Serial.println("[TEST] If all 6 joints moved, hardware is OK.");
+  Serial.println("[TEST] If only gripper moved, check your 5V power supply (need 5A+).\n");
 }
 
 // ===================== Main Loop =====================

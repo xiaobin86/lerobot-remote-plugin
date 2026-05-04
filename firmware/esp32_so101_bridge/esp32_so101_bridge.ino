@@ -279,12 +279,44 @@ void setup() {
   // Start WiFi
   setupWiFi();
 
+  // Self-test all joints (runs before PC connects)
+  testAllJoints();
+
   // Start TCP servers
   serverCmd.begin();
   serverObs.begin();
   Serial.println("[TCP] Command server listening on port " + String(PORT_CMD));
   Serial.println("[TCP] Observation server listening on port " + String(PORT_OBS));
   Serial.println("\nWaiting for PC client connections...\n");
+}
+
+void testAllJoints() {
+  Serial.println("\n[TEST] ===== Joint Self-Test =====");
+  Serial.println("[TEST] Watch your arm! It should move in 3 steps.");
+  delay(2000);
+
+  Serial.println("[TEST] Step 1/3: Moving to CENTER (2048)...");
+  uint16_t center[6] = {2048, 2048, 2048, 2048, 2048, 2048};
+  syncWritePositions(center);
+  delay(1500);
+
+  Serial.println("[TEST] Step 2/3: Moving to LOW (1024)...");
+  uint16_t low[6] = {1024, 1024, 1024, 1024, 1024, 1024};
+  syncWritePositions(low);
+  delay(1500);
+
+  Serial.println("[TEST] Step 3/3: Moving to HIGH (3072)...");
+  uint16_t high[6] = {3072, 3072, 3072, 3072, 3072, 3072};
+  syncWritePositions(high);
+  delay(1500);
+
+  Serial.println("[TEST] Returning to CENTER...");
+  syncWritePositions(center);
+  delay(1500);
+
+  Serial.println("[TEST] Self-test complete.");
+  Serial.println("[TEST] If all 6 joints moved, hardware is OK.");
+  Serial.println("[TEST] If only gripper moved, check your 5V power supply (need 5A+).\n");
 }
 
 // ===================== Main Loop =====================
