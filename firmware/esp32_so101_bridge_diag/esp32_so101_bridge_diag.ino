@@ -101,16 +101,24 @@ void enableTorque(uint8_t id) {
 }
 
 uint16_t readPosition(uint8_t id) {
+  // Clear RX buffer first to avoid reading stale data
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
+
   uint8_t pkt[8] = {H1, H2, id, 4, INST_READ, ADDR_PRESENT_POS, 2, 0};
   pkt[7] = calcChecksum(&pkt[2], 5);
   SERVO_SERIAL.flush();
   SERVO_SERIAL.write(pkt, 8);
+
   unsigned long t0 = micros();
   while (SERVO_SERIAL.available() < 8) {
     if (micros() - t0 > 5000) return 0xFFFF;
   }
+
+  // Read exactly 8 bytes (one status packet) — NEVER overflow buf
   uint8_t buf[16];
-  int n = SERVO_SERIAL.readBytes(buf, SERVO_SERIAL.available());
+  int toRead = min(SERVO_SERIAL.available(), 8);
+  int n = SERVO_SERIAL.readBytes(buf, toRead);
+
   for (int i = 0; i <= n - 8; i++) {
     if (buf[i] == H1 && buf[i+1] == H2 && buf[i+2] == id) {
       if (buf[i+4] == 0 && buf[i+3] == 4) {
@@ -131,21 +139,31 @@ void readAllPositions(uint16_t out[]) {
 // Replicates SO101's configure() from lerobot/robots/so_follower/so_follower.py
 
 void writeByte(uint8_t id, uint8_t addr, uint8_t value) {
-  uint8_t pkt[8] = {H1, H2, id, 4, INST_WRITE, addr, value, 0};
+  // Use static buffer to avoid DMA reading freed stack memory on ESP32-S3
+  static uint8_t pkt[8];
+  pkt[0] = H1; pkt[1] = H2; pkt[2] = id; pkt[3] = 4;
+  pkt[4] = INST_WRITE; pkt[5] = addr; pkt[6] = value; pkt[7] = 0;
   pkt[7] = calcChecksum(&pkt[2], 5);
   SERVO_SERIAL.write(pkt, 8);
-  delayMicroseconds(300);  // brief delay between packets to avoid bus collision
+  SERVO_SERIAL.flush();          // Wait for TX complete before returning
+  delayMicroseconds(500);        // Brief pause for servo to process + respond
 }
 
 void writeWord(uint8_t id, uint8_t addr, uint16_t value) {
-  uint8_t pkt[9] = {H1, H2, id, 5, INST_WRITE, addr,
-                    (uint8_t)(value & 0xFF), (uint8_t)(value >> 8), 0};
+  static uint8_t pkt[9];
+  pkt[0] = H1; pkt[1] = H2; pkt[2] = id; pkt[3] = 5;
+  pkt[4] = INST_WRITE; pkt[5] = addr;
+  pkt[6] = value & 0xFF; pkt[7] = value >> 8; pkt[8] = 0;
   pkt[8] = calcChecksum(&pkt[2], 6);
   SERVO_SERIAL.write(pkt, 9);
-  delayMicroseconds(300);
+  SERVO_SERIAL.flush();
+  delayMicroseconds(500);
 }
 
 void configureMotors() {
+  // Drain any stale bytes from previous boot / noise
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
+
   // Disable torque before writing EPROM settings
   for (int i = 0; i < NUM_MOTORS; i++) {
     writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 0);  // Torque off
@@ -156,20 +174,20 @@ void configureMotors() {
   // Common settings for all motors
   for (int i = 0; i < NUM_MOTORS; i++) {
     uint8_t id = MOTOR_IDS[i];
-    writeByte(id, 7, 0);     // Return_Delay_Time = 0  (2us response)
-    writeByte(id, 33, 0);    // Operating_Mode = 0 (POSITION servo mode)
-    writeByte(id, 21, 16);   // P_Coefficient = 16 (reduce shakiness)
+    writeByte(id, 7, 0);     // Return_Delay_Time = 0
+    writeByte(id, 33, 0);    // Operating_Mode = POSITION
+    writeByte(id, 21, 16);   // P_Coefficient = 16
     writeByte(id, 23, 0);    // I_Coefficient = 0
     writeByte(id, 22, 32);   // D_Coefficient = 32
-    writeByte(id, 41, 254);  // Acceleration = 254 (max)
+    writeByte(id, 41, 254);  // Acceleration = 254
     writeByte(id, 85, 254);  // Maximum_Acceleration = 254
   }
 
-  // Gripper-specific protection (motor index 5 = ID 6)
+  // Gripper-specific protection (ID 6)
   uint8_t gripperId = MOTOR_IDS[5];
-  writeWord(gripperId, 16, 500);  // Max_Torque_Limit = 500 (50%)
-  writeWord(gripperId, 28, 250);  // Protection_Current = 250 (50%)
-  writeByte(gripperId, 36, 25);   // Overload_Torque = 25 (25%)
+  writeWord(gripperId, 16, 500);
+  writeWord(gripperId, 28, 250);
+  writeByte(gripperId, 36, 25);
 
   delay(50);
 
@@ -177,6 +195,11 @@ void configureMotors() {
   for (int i = 0; i < NUM_MOTORS; i++) {
     writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 1);
   }
+
+  // IMPORTANT: Drain status-packet responses so they don't pile up
+  // and later cause readPosition() to overflow its 16-byte buffer.
+  delay(20);
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
 }
 
 // ===================== Setup =====================
@@ -317,6 +340,9 @@ void loop() {
       }
       if (ok) {
         syncWritePositions(goals);
+        // Brief delay so servos have time to start moving before next command.
+        // At 30 fps each frame is ~33 ms; 5 ms leaves ~28 ms for motion.
+        delay(5);
         Serial.println("[DIAG] SYNC_WRITE sent");
       }
     }

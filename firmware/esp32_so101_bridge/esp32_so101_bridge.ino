@@ -115,7 +115,9 @@ void enableTorque(uint8_t id) {
  * Returns 0xFFFF on failure/timeout.
  */
 uint16_t readPosition(uint8_t id) {
-  // Build READ packet
+  // Clear RX buffer to avoid stale data
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
+
   uint8_t pkt[8] = {H1, H2, id, 4, INST_READ, ADDR_PRESENT_POS, 2, 0};
   pkt[7] = calcChecksum(&pkt[2], 5);
 
@@ -131,7 +133,8 @@ uint16_t readPosition(uint8_t id) {
   }
 
   uint8_t buf[16];
-  int n = SERVO_SERIAL.readBytes(buf, SERVO_SERIAL.available());
+  int toRead = min(SERVO_SERIAL.available(), 8);
+  int n = SERVO_SERIAL.readBytes(buf, toRead);
 
   // Parse status packet: FF FF ID LEN ERR PARAM_LO PARAM_HI CS
   for (int i = 0; i <= n - 8; i++) {
@@ -171,21 +174,29 @@ void enableAllTorque() {
 // Replicates SO101's configure() from lerobot/robots/so_follower/so_follower.py
 
 void writeByte(uint8_t id, uint8_t addr, uint8_t value) {
-  uint8_t pkt[8] = {H1, H2, id, 4, INST_WRITE, addr, value, 0};
+  static uint8_t pkt[8];
+  pkt[0] = H1; pkt[1] = H2; pkt[2] = id; pkt[3] = 4;
+  pkt[4] = INST_WRITE; pkt[5] = addr; pkt[6] = value; pkt[7] = 0;
   pkt[7] = calcChecksum(&pkt[2], 5);
   SERVO_SERIAL.write(pkt, 8);
-  delayMicroseconds(300);
+  SERVO_SERIAL.flush();
+  delayMicroseconds(500);
 }
 
 void writeWord(uint8_t id, uint8_t addr, uint16_t value) {
-  uint8_t pkt[9] = {H1, H2, id, 5, INST_WRITE, addr,
-                    (uint8_t)(value & 0xFF), (uint8_t)(value >> 8), 0};
+  static uint8_t pkt[9];
+  pkt[0] = H1; pkt[1] = H2; pkt[2] = id; pkt[3] = 5;
+  pkt[4] = INST_WRITE; pkt[5] = addr;
+  pkt[6] = value & 0xFF; pkt[7] = value >> 8; pkt[8] = 0;
   pkt[8] = calcChecksum(&pkt[2], 6);
   SERVO_SERIAL.write(pkt, 9);
-  delayMicroseconds(300);
+  SERVO_SERIAL.flush();
+  delayMicroseconds(500);
 }
 
 void configureMotors() {
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
+
   // Disable torque before writing EPROM settings
   for (int i = 0; i < NUM_MOTORS; i++) {
     writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 0);
@@ -217,6 +228,10 @@ void configureMotors() {
   for (int i = 0; i < NUM_MOTORS; i++) {
     writeByte(MOTOR_IDS[i], ADDR_TORQUE_EN, 1);
   }
+
+  // Drain status-packet responses to prevent readPosition() buffer overflow
+  delay(20);
+  while (SERVO_SERIAL.available()) { SERVO_SERIAL.read(); }
 }
 
 // ===================== WiFi Helpers =====================
@@ -324,6 +339,7 @@ void loop() {
       }
       if (ok) {
         syncWritePositions(goals);
+        delay(5);  // Give servos time to start moving
         Serial.println("[SERVO] Positions updated");
       }
     }
