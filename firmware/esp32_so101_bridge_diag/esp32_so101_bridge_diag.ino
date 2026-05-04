@@ -9,8 +9,18 @@
 #include <ArduinoJson.h>
 
 // ===================== WiFi Configuration =====================
+// Option A: Station mode (connect to existing router)
+// NOTE: Chinese SSID may cause connection failure due to encoding issues.
+//       If your router uses Chinese name, switch to AP mode below.
 const char* WIFI_SSID     = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+
+// Option B: Access Point mode (ESP32 creates its own network)
+// Uncomment the line below to use AP mode (bypasses Chinese SSID issue):
+// #define USE_AP_MODE
+const char* AP_SSID     = "SO101-ROBOT";
+const char* AP_PASSWORD = "12345678";   // min 8 chars
+const int   AP_CHANNEL  = 6;
 
 // ===================== TCP Server Ports =====================
 const int PORT_CMD = 8888;
@@ -142,6 +152,14 @@ void setup() {
   }
 
   // Step 4: WiFi
+#ifdef USE_AP_MODE
+  Serial.print("[DIAG] Starting AP mode: ");
+  Serial.println(AP_SSID);
+  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
+  Serial.print("[DIAG] AP started. IP: ");
+  Serial.println(WiFi.softAPIP());
+  Serial.println("[DIAG] Connect your PC to this WiFi, then use the IP above.");
+#else
   Serial.print("[DIAG] Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -157,10 +175,16 @@ void setup() {
     Serial.print("[DIAG] WiFi Connected. IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("[DIAG] ERROR: WiFi connection failed! Check SSID/PASSWORD.");
+    Serial.println("[DIAG] ERROR: WiFi connection failed!");
+    Serial.println("[DIAG] Possible causes:");
+    Serial.println("  - Wrong SSID or PASSWORD");
+    Serial.println("  - Chinese SSID (encoding mismatch)");
+    Serial.println("  - Router too far / signal too weak");
+    Serial.println("[DIAG] Fix: Uncomment '#define USE_AP_MODE' and re-flash.");
     Serial.println("[DIAG] Halting. Please fix WiFi config and reset.");
     while (true) { delay(1000); }
   }
+#endif
 
   // Step 5: TCP servers
   serverCmd.begin();

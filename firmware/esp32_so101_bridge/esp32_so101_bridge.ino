@@ -20,7 +20,7 @@
 
 // ===================== WiFi Configuration =====================
 // Option A: Station mode (connect to existing router)
-const char* WIFI_SSID     = "上网6元一小时";
+const char* WIFI_SSID     = "oppowifi";
 const char* WIFI_PASSWORD = "addfghjkl";
 
 // Option B: Access Point mode (ESP32 creates its own network)

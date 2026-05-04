@@ -204,7 +204,7 @@ If the output stops at a specific line, that is exactly where the problem is:
 | `Initializing UART2...` | `Serial2.begin()` crashes | Check GPIO pins; some ESP32 boards reserve 17/18 for PSRAM |
 | `Torque enable packets sent` | Motors not responding | Check Waveshare power (5V) and UART wiring (TX↔RX) |
 | `Probing motor ID 1...` | No response from servo bus | Waveshare not powered, or wrong baud-rate, or servo IDs ≠ 1-6 |
-| `Connecting to WiFi...` (dots forever) | Wrong WiFi credentials | Double-check SSID/PASSWORD; try AP mode |
+| `Connecting to WiFi...` (dots forever) | Wrong WiFi credentials or **Chinese SSID** | Double-check SSID/PASSWORD; **if SSID contains Chinese characters, switch to AP mode** |
 | `WiFi Connected` but no TCP | Firewall blocking | Ensure Windows Defender / antivirus allows ports 8888/8889 |
 
 ### Symptoms Table
@@ -218,9 +218,21 @@ If the output stops at a specific line, that is exactly where the problem is:
 
 ---
 
-## Advanced: Switching to AP Mode
+## AP Mode (Bypass Chinese SSID / No Router)
 
-If you do not have a router nearby, uncomment the following block in the Arduino sketch:
+If your WiFi router uses **Chinese characters in the SSID**, ESP32 may fail to connect due to encoding mismatch. The simplest fix is to use **AP mode** — the ESP32 creates its own WiFi hotspot.
+
+### How to enable AP mode
+
+In **both** `esp32_so101_bridge.ino` and `esp32_so101_bridge_diag.ino`, find this section at the top:
+
+```cpp
+// Option B: Access Point mode
+// Uncomment the line below to use AP mode:
+// #define USE_AP_MODE
+```
+
+Uncomment the `#define`:
 
 ```cpp
 #define USE_AP_MODE
@@ -228,7 +240,22 @@ const char* AP_SSID     = "SO101-ROBOT";
 const char* AP_PASSWORD = "12345678";
 ```
 
-The ESP32 will create a WiFi access point. Connect your PC to it, then use the ESP32's default AP IP (usually `192.168.4.1`) as `--robot.remote_ip`.
+Re-flash the ESP32. It will now broadcast a WiFi named `SO101-ROBOT`.
+
+### PC connection
+
+1. On your PC, connect to the `SO101-ROBOT` WiFi (password: `12345678`).
+2. Check the Serial Monitor for the AP IP — usually `192.168.4.1`.
+3. Use that IP when running `lerobot-replay`:
+
+```powershell
+lerobot-replay `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.4.1 `
+  ...
+```
+
+> ⚠️ **Note**: In AP mode, your PC must be connected to the ESP32's WiFi. If your PC also needs internet access, you may need a second network interface (e.g., Ethernet or a USB WiFi dongle) or temporarily switch to mobile hotspot with an English SSID.
 
 ---
 
