@@ -1,0 +1,20 @@
+[project]
+name = "lerobot_robot_remote_so101"
+version = "0.1.0"
+description = "Remote SO101 robot plugin for LeRobot via ESP32 TCP bridge"
+requires-python = ">=3.10"
+dependencies = [
+    "lerobot>=0.5.0",
+    "numpy>=2.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lerobot_robot_remote_so101*"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
