@@ -33,8 +33,10 @@ lerobot-robot-remote-so101/
 │   ├── config.py                           # RemoteSO101Config
 │   └── remote_so101.py                     # RemoteSO101 Robot implementation
 └── firmware/
-    └── esp32_so101_bridge/
-        └── esp32_so101_bridge.ino          # ESP32 Arduino sketch
+    ├── esp32_so101_bridge_v2/              # ESP32 Arduino sketch (optimized)
+    │   └── esp32_so101_bridge_v2.ino
+    └── test_serial_only/                   # Minimal serial test
+        └── test_serial_only.ino
 ```
 
 **Branch model:**
@@ -74,7 +76,7 @@ The package name `lerobot_robot_remote_so101` starts with `lerobot_robot_`, so L
 
 ### 2. Flash the ESP32
 
-1. Open `firmware/esp32_so101_bridge/esp32_so101_bridge.ino` in **Arduino IDE**.
+1. Open `firmware/esp32_so101_bridge_v2/esp32_so101_bridge_v2.ino` in **Arduino IDE**.
 2. Update WiFi credentials at the top of the sketch:
    ```cpp
    const char* WIFI_SSID     = "YOUR_WIFI_SSID";
@@ -84,6 +86,8 @@ The package name `lerobot_robot_remote_so101` starts with `lerobot_robot_`, so L
 3. Select your ESP32 board and port.
 4. Click **Upload**.
 5. Open Serial Monitor (115200 baud) and note the ESP32 IP address.
+
+> **v2 Performance**: Uses `syncWrite` + `syncRead` to update/read all 6 servos in single bus packets, plus `TCP_NODELAY` to eliminate TCP buffering. Observation latency drops from ~30–50 ms to ~5 ms, enabling smooth 30 fps replay without skipping `get_observation`.
 
 ### 3. Verify calibration files exist
 
@@ -112,6 +116,36 @@ Replace:
 - `192.168.x.x` – your ESP32 IP address
 - `black` – your SO101 robot ID (must match the calibration file name)
 - `your_username/your_dataset` – your Hugging Face dataset repo
+
+### 5. Run `lerobot-teleoperate`
+
+The same plugin works as a **remote follower** for teleoperation. Use any LeRobot teleoperator (keyboard, gamepad, or a local leader arm) to control the remote SO101:
+
+```powershell
+# Keyboard teleoperation
+lerobot-teleoperate `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.x.x `
+  --robot.id=black `
+  --teleop.type=keyboard
+
+# Gamepad teleoperation
+lerobot-teleoperate `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.x.x `
+  --robot.id=black `
+  --teleop.type=gamepad
+
+# Local leader + remote follower (bimanual teleop)
+lerobot-teleoperate `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.x.x `
+  --robot.id=black `
+  --teleop.type=so100_leader `
+  --teleop.port=/dev/ttyUSB0
+```
+
+> **Note**: For teleoperation, `skip_observation` defaults to `false` so the teleop loop receives real-time joint positions. The v2 firmware's `syncRead` provides ~5 ms observation latency, sufficient for 30–60 Hz teleop loops.
 
 ---
 
@@ -171,50 +205,55 @@ You should see `Alive: 0`, `Alive: 1`, `Alive: 2` every second.
 
 ### Still no output from the main sketch?
 
-Burn the **diagnostic version** which prints a log at every step:
+Burn the **minimum serial test** first to verify hardware:
 
 ```bash
-# Open firmware/esp32_so101_bridge_diag/esp32_so101_bridge_diag.ino
-# Update WiFi credentials → Upload → Serial Monitor (115200) → Press RST
+# Open firmware/test_serial_only/test_serial_only.ino
+# Upload → Serial Monitor (115200) → Press RST
 ```
 
-Expected output:
+If that works but the main sketch fails, check the v2 Serial Monitor output. Expected:
 ```
-[DIAG] ===== ESP32 SO101 Bridge (DIAG) =====
-[DIAG] Serial USB initialized OK
-[DIAG] Initializing UART2 (TX=17 RX=18)...
-[DIAG] UART2 initialized OK
-[DIAG] Enabling torque on all motors...
-[DIAG] Torque enable packets sent
-[DIAG] Probing motor ID 1...
-[DIAG] Motor ID 1 present position: 2048
-[DIAG] Connecting to WiFi: YOUR_WIFI_SSID
-.....
-[DIAG] WiFi Connected. IP: 192.168.1.105
-[DIAG] TCP CMD server on port 8888
-[DIAG] TCP OBS server on port 8889
-[DIAG] Setup complete. Waiting for PC client...
+[V2] ===== ESP32 SO101 Bridge v2 (Optimized) =====
+[V2] UART2 initialized
+[V2] Scanning servos...
+[V2]   ID=1 pos=2048
+...
+[V2] WiFi IP: 192.168.1.105
+[V2] TCP CMD port 8888, OBS port 8889
+[V2] Setup complete. Waiting for PC...
 ```
 
-If the output stops at a specific line, that is exactly where the problem is:
 
-| Last visible line | Problem | Fix |
-|---|---|---|
-| `Serial USB initialized OK` | Code never reaches UART init | Very rare; likely a crash before that line |
-| `Initializing UART2...` | `Serial2.begin()` crashes | Check GPIO pins; some ESP32 boards reserve 17/18 for PSRAM |
-| `Torque enable packets sent` | Motors not responding | Check Waveshare power (5V) and UART wiring (TX↔RX) |
-| `Probing motor ID 1...` | No response from servo bus | Waveshare not powered, or wrong baud-rate, or servo IDs ≠ 1-6 |
-| `Connecting to WiFi...` (dots forever) | Wrong WiFi credentials or **Chinese SSID** | Double-check SSID/PASSWORD; **if SSID contains Chinese characters, switch to AP mode** |
-| `WiFi Connected` but no TCP | Firewall blocking | Ensure Windows Defender / antivirus allows ports 8888/8889 |
-
-### Symptoms Table
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | `No calibration file found` | Missing or misnamed `.json` | Copy the SO101 calibration file to `~/.cache/huggingface/lerobot/calibration/robots/so_follower/{id}.json` |
 | `Cannot connect to ESP32` | Wrong IP / WiFi issue | Check Serial Monitor for the ESP32 IP; ensure PC and ESP32 are on the same network |
 | `Servos do not move` | Torque not enabled / wiring | Verify GPIO17/18 wiring; ensure Waveshare board is powered; check ESP32 Serial output |
-| `Jerk / overshoot` | PID / acceleration settings | Configure servo PID (P=16, I=0, D=32) and `Acceleration=254` via the Feetech config tool, or add setup code to ESP32 `setup()` |
+| `Motion feels slow / stuttery` | `get_observation()` RTT too high | v2 firmware uses `syncRead` (~5 ms) + `TCP_NODELAY`; if still slow, use `--robot.skip_observation=true` |
+| `Jerk / overshoot` | PID / acceleration settings | v2 firmware sets `ACC=254` at startup; if needed, adjust PID via Feetech config tool |
+
+---
+
+## Performance Tuning
+
+### Option A: Use v2 firmware (recommended)
+The v2 firmware (`esp32_so101_bridge_v2`) uses `syncWrite` + `syncRead` + `TCP_NODELAY` to minimize latency. This is sufficient for most replay scenarios.
+
+### Option B: Skip observation on PC side
+If you are **only replaying** (not teleoperating) and still experience stutter, the PC-side plugin can skip `get_observation()` entirely:
+
+```powershell
+lerobot-replay `
+  --robot.type=remote_so101 `
+  --robot.remote_ip=192.168.x.x `
+  --robot.skip_observation=true `
+  --dataset.repo_id=your_username/your_dataset `
+  --dataset.episode=0
+```
+
+> ⚠️ Only safe for **replay** — do NOT use for teleoperation or closed-loop control.
 
 ---
 
@@ -224,7 +263,7 @@ If your WiFi router uses **Chinese characters in the SSID**, ESP32 may fail to c
 
 ### How to enable AP mode
 
-In **both** `esp32_so101_bridge.ino` and `esp32_so101_bridge_diag.ino`, find this section at the top:
+In `esp32_so101_bridge_v2.ino`, find this section at the top:
 
 ```cpp
 // Option B: Access Point mode

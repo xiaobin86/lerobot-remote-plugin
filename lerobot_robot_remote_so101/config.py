@@ -20,6 +20,12 @@ class RemoteSO101Config(RobotConfig):
 
     use_degrees: bool = False
 
+    # Skip observation reads during replay. This eliminates the ~20-50ms RTT
+    # penalty per frame and restores smooth 30fps replay. Safe for replay since
+    # actions are pre-computed in the dataset. Do NOT enable for teleoperation
+    # or closed-loop control where real-time feedback is required.
+    skip_observation: bool = False
+
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
 
     # Override default calibration directory to reuse SO101 calibration files.

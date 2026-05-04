@@ -1,6 +1,8 @@
 import json
 import logging
+import signal
 import socket
+import sys
 
 import numpy as np
 from lerobot.robots.robot import Robot
@@ -46,6 +48,20 @@ class RemoteSO101(Robot):
         self._cmd_sock: socket.socket | None = None
         self._obs_sock: socket.socket | None = None
         self._last_obs: RobotObservation = {}
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self) -> None:
+        """Register signal handlers so Ctrl+C releases servo torque."""
+        def _signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, releasing torque and disconnecting...")
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
 
     @property
     def observation_features(self) -> dict[str, type]:
@@ -88,10 +104,12 @@ class RemoteSO101(Robot):
 
         self._cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._cmd_sock.settimeout(self.config.timeout_s)
+        self._cmd_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._cmd_sock.connect((self.config.remote_ip, self.config.port_cmd))
 
         self._obs_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._obs_sock.settimeout(self.config.timeout_s)
+        self._obs_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._obs_sock.connect((self.config.remote_ip, self.config.port_obs))
 
         self._is_connected = True
@@ -141,34 +159,86 @@ class RemoteSO101(Robot):
             "cmd": "set_positions",
             "positions": native_positions,
         }
-        msg = json.dumps(payload, separators=(",", ":")) + "\n"
-        self._cmd_sock.sendall(msg.encode())
+        if not self._send_cmd(payload):
+            logger.warning("send_action: failed to transmit to ESP32")
         return action
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
-        try:
-            request = json.dumps({"cmd": "get_obs"}, separators=(",", ":")) + "\n"
-            self._cmd_sock.sendall(request.encode())
+        if self.config.skip_observation:
+            # Open-loop optimization: skip remote observation to eliminate RTT.
+            # During replay, the action is already recorded in the dataset, so
+            # real-time feedback is not needed. This restores smooth 30fps replay.
+            # For teleoperation, set skip_observation=false (default).
+            return self._last_obs
 
+        if not self._send_cmd({"cmd": "get_obs"}):
+            logger.warning("get_observation: failed to request obs from ESP32")
+            return self._last_obs
+
+        data = self._recv_obs()
+        if data is not None:
+            self._last_obs = {f"{k}.pos": float(v) for k, v in data.items()}
+        else:
+            logger.warning("get_observation: no data received, reusing last known values")
+        return self._last_obs
+
+    def _send_cmd(self, payload: dict) -> bool:
+        """Send a JSON command to ESP32, with auto-reconnect on disconnect."""
+        if not self._cmd_sock or not self._is_connected:
+            return False
+        try:
+            msg = json.dumps(payload, separators=(",", ":")) + "\n"
+            self._cmd_sock.sendall(msg.encode())
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            logger.warning(f"TCP send failed: {exc}. Marking as disconnected.")
+            self._is_connected = False
+            return False
+
+    def _recv_obs(self) -> dict | None:
+        """Receive observation JSON from ESP32."""
+        if not self._obs_sock or not self._is_connected:
+            return None
+        try:
             buf = b""
             while b"\n" not in buf:
                 chunk = self._obs_sock.recv(4096)
                 if not chunk:
-                    break
+                    logger.warning("Observation socket closed by peer.")
+                    self._is_connected = False
+                    return None
                 buf += chunk
-
-            data = json.loads(buf.decode().strip())
-            self._last_obs = {f"{k}.pos": float(v) for k, v in data.items()}
-        except Exception as exc:
-            logger.warning(f"Observation read failed: {exc}; reusing last known values.")
-        return self._last_obs
+            return json.loads(buf.decode().strip())
+        except socket.timeout:
+            logger.debug("Observation read timeout")
+            return None
+        except (ConnectionResetError, OSError) as exc:
+            logger.warning(f"Observation recv failed: {exc}")
+            self._is_connected = False
+            return None
 
     @check_if_not_connected
     def disconnect(self) -> None:
+        # Send torque release command before closing sockets
         if self._cmd_sock:
-            self._cmd_sock.close()
+            try:
+                release_cmd = json.dumps({"cmd": "release_torque"}, separators=(",", ":")) + "\n"
+                self._cmd_sock.settimeout(2.0)
+                self._cmd_sock.sendall(release_cmd.encode())
+                # Wait briefly for acknowledgment (optional)
+                try:
+                    self._cmd_sock.recv(256)
+                except socket.timeout:
+                    pass
+            except Exception as exc:
+                logger.debug(f"Failed to send release_torque: {exc}")
+            finally:
+                self._cmd_sock.close()
         if self._obs_sock:
-            self._obs_sock.close()
+            try:
+                self._obs_sock.close()
+            except Exception:
+                pass
         self._is_connected = False
         logger.info("RemoteSO101 disconnected.")
