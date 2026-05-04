@@ -149,6 +149,66 @@ Therefore the calibration file (`range_min`, `range_max`, `drive_mode`) must be 
 
 ## Troubleshooting
 
+### ESP32 Serial Monitor shows nothing after flashing
+
+This is the most common issue. Follow this exact sequence:
+
+1. **Check USB cable** — use a cable that is confirmed to transfer data (not charge-only).
+2. **Check COM port** — Arduino IDE → Tools → Port → select the port that appears when you plug in the ESP32.
+3. **Check Baud Rate** — Arduino IDE Serial Monitor → bottom-right dropdown → select **115200**.
+4. **Press RST button** — ESP32 does **not** auto-reset after upload; you must press the physical `RST` button on the board.
+
+If you still see nothing, burn the **minimum serial test** first:
+
+```bash
+# Open firmware/test_serial_only/test_serial_only.ino in Arduino IDE
+# Upload → Open Serial Monitor (115200) → Press RST
+```
+
+You should see `Alive: 0`, `Alive: 1`, `Alive: 2` every second.  
+- **If you do** → USB serial works; the issue is in the main sketch (probably WiFi blocking or a crash).
+- **If you do NOT** → hardware/USB driver issue; try a different cable or USB port.
+
+### Still no output from the main sketch?
+
+Burn the **diagnostic version** which prints a log at every step:
+
+```bash
+# Open firmware/esp32_so101_bridge_diag/esp32_so101_bridge_diag.ino
+# Update WiFi credentials → Upload → Serial Monitor (115200) → Press RST
+```
+
+Expected output:
+```
+[DIAG] ===== ESP32 SO101 Bridge (DIAG) =====
+[DIAG] Serial USB initialized OK
+[DIAG] Initializing UART2 (TX=17 RX=18)...
+[DIAG] UART2 initialized OK
+[DIAG] Enabling torque on all motors...
+[DIAG] Torque enable packets sent
+[DIAG] Probing motor ID 1...
+[DIAG] Motor ID 1 present position: 2048
+[DIAG] Connecting to WiFi: YOUR_WIFI_SSID
+.....
+[DIAG] WiFi Connected. IP: 192.168.1.105
+[DIAG] TCP CMD server on port 8888
+[DIAG] TCP OBS server on port 8889
+[DIAG] Setup complete. Waiting for PC client...
+```
+
+If the output stops at a specific line, that is exactly where the problem is:
+
+| Last visible line | Problem | Fix |
+|---|---|---|
+| `Serial USB initialized OK` | Code never reaches UART init | Very rare; likely a crash before that line |
+| `Initializing UART2...` | `Serial2.begin()` crashes | Check GPIO pins; some ESP32 boards reserve 17/18 for PSRAM |
+| `Torque enable packets sent` | Motors not responding | Check Waveshare power (5V) and UART wiring (TX↔RX) |
+| `Probing motor ID 1...` | No response from servo bus | Waveshare not powered, or wrong baud-rate, or servo IDs ≠ 1-6 |
+| `Connecting to WiFi...` (dots forever) | Wrong WiFi credentials | Double-check SSID/PASSWORD; try AP mode |
+| `WiFi Connected` but no TCP | Firewall blocking | Ensure Windows Defender / antivirus allows ports 8888/8889 |
+
+### Symptoms Table
+
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | `No calibration file found` | Missing or misnamed `.json` | Copy the SO101 calibration file to `~/.cache/huggingface/lerobot/calibration/robots/so_follower/{id}.json` |
