@@ -1,8 +1,11 @@
 /**
- * ESP32 SO101 Remote Bridge v3 — Bimanual Leader/Follower Dual Mode + 中文SSID显示
+ * ESP32 SO101 Remote Bridge v4 — Arm Visualization + Bimanual + Chinese SSID
  *
- * 支持 GT30L32S4W 字库芯片显示中文WiFi名称
- * ASCII字体放大到12x16，与16x16汉字高度对齐
+ * Features:
+ *   - Real-time 2D arm stick-figure visualization on ST7789 (replaces message log)
+ *   - Bimanual Leader/Follower dual mode via compile-time #define
+ *   - Chinese WiFi SSID display via GT30L32S4W font chip
+ *   - Unified 16px font height (ASCII 12x16 + Chinese 16x16)
  *
  * To select mode, uncomment ONE of the following lines before flashing:
  */
@@ -101,6 +104,52 @@ const char*   MOTOR_NAMES[] = {
 };
 const int NUM_MOTORS = 6;
 
+// ===================== Arm Visualization Configuration =====================
+// Comment out to disable arm visualization and restore message scrolling
+#define ENABLE_ARM_VIZ
+
+#ifdef ENABLE_ARM_VIZ
+
+// Arm link lengths (mm) — approximate for SO101
+#define ARM_L1_BASE    40   // Base pedestal to shoulder lift joint
+#define ARM_L2_UPPER   120  // Upper arm (shoulder to elbow)
+#define ARM_L3_FORE    100  // Forearm (elbow to wrist flex)
+#define ARM_L4_WRIST   70   // Wrist flex to gripper center
+
+// Visualization area (below status bar separator at Y=72)
+#define ARM_AREA_Y0    74
+#define ARM_AREA_Y1    240
+#define ARM_AREA_H     (ARM_AREA_Y1 - ARM_AREA_Y0)  // 166 pixels
+
+// Base position on screen (centered horizontally, near bottom)
+#define ARM_BASE_X     100
+#define ARM_BASE_Y     232
+
+// Scale: pixels per millimeter
+#define ARM_SCALE      0.40f
+
+// Drawing constants
+#define ARM_COLOR_BASE      TFT_DARKGREY
+#define ARM_COLOR_LINK      TFT_CYAN
+#define ARM_COLOR_JOINT     TFT_YELLOW
+#define ARM_COLOR_GRIPPER   TFT_GREEN
+#define ARM_COLOR_GRIPPER_CLOSED TFT_RED
+#define JOINT_RADIUS        4
+#define GRIPPER_LEN         14
+
+// Current servo positions cached for visualization
+int vizPositions[NUM_MOTORS] = {2048, 2048, 2048, 2048, 2048, 2048};
+bool vizPositionsValid = false;
+
+// Computed joint screen coordinates
+// [0]=base bottom, [1]=shoulder, [2]=elbow, [3]=wrist, [4]=gripper center
+struct ArmPoint { int16_t x, y; };
+ArmPoint armPts[5];
+
+const float DEG2RAD = PI / 180.0f;
+
+#endif // ENABLE_ARM_VIZ
+
 // ===================== GT30L32S4W Font Functions =====================
 
 // GB2312 address calculation
@@ -185,6 +234,120 @@ int strPixelWidth(const char* str) {
   return w;
 }
 
+// ===================== Arm Visualization Functions =====================
+
+#ifdef ENABLE_ARM_VIZ
+
+// Normalize servo position [0..4095] to [-1..1] around mid-point
+inline float normPos(int pos) {
+  if (pos < 0) return 0.0f;
+  return (pos - 2048) / 2048.0f;
+}
+
+// Compute screen coordinates of all arm joints from servo positions
+void updateArmGeometry(const int positions[]) {
+  // Base center bottom
+  armPts[0].x = ARM_BASE_X;
+  armPts[0].y = ARM_BASE_Y;
+
+  // Shoulder joint (top of base pedestal)
+  armPts[1].x = ARM_BASE_X;
+  armPts[1].y = ARM_BASE_Y - (int16_t)(ARM_L1_BASE * ARM_SCALE);
+
+  // Joint angles: 0 degrees = straight UP (screen -Y direction)
+  // Positive angle = tilt BACKWARD (toward right in typical side view)
+  // Negative angle = tilt FORWARD (toward left)
+  float a1 = normPos(positions[1]) * 100.0f * DEG2RAD;   // shoulder lift
+  float a2 = normPos(positions[2]) * 100.0f * DEG2RAD;   // elbow flex (relative)
+  float a3 = normPos(positions[3]) * 100.0f * DEG2RAD;   // wrist flex (relative)
+
+  float absA1 = a1;
+  float absA2 = absA1 + a2;
+  float absA3 = absA2 + a3;
+
+  // Upper arm end = elbow
+  armPts[2].x = armPts[1].x + (int16_t)(ARM_L2_UPPER * ARM_SCALE * sinf(absA1));
+  armPts[2].y = armPts[1].y - (int16_t)(ARM_L2_UPPER * ARM_SCALE * cosf(absA1));
+
+  // Forearm end = wrist flex joint
+  armPts[3].x = armPts[2].x + (int16_t)(ARM_L3_FORE * ARM_SCALE * sinf(absA2));
+  armPts[3].y = armPts[2].y - (int16_t)(ARM_L3_FORE * ARM_SCALE * cosf(absA2));
+
+  // Gripper center
+  armPts[4].x = armPts[3].x + (int16_t)(ARM_L4_WRIST * ARM_SCALE * sinf(absA3));
+  armPts[4].y = armPts[3].y - (int16_t)(ARM_L4_WRIST * ARM_SCALE * cosf(absA3));
+}
+
+// Draw thick line by drawing the main line plus small offsets
+void drawThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+  tft.drawLine(x0, y0, x1, y1, color);
+  tft.drawLine(x0 + 1, y0, x1 + 1, y1, color);
+  tft.drawLine(x0, y0 + 1, x1, y1 + 1, color);
+}
+
+// Draw the complete arm stick figure
+void drawArm() {
+  // Clear only the visualization area
+  tft.fillRect(0, ARM_AREA_Y0, 240, ARM_AREA_H, TFT_BLACK);
+
+  if (!vizPositionsValid) {
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.setCursor(50, ARM_AREA_Y0 + ARM_AREA_H / 2 - 8);
+    tft.print("No arm data");
+    return;
+  }
+
+  updateArmGeometry(vizPositions);
+
+  // Draw base pedestal (grey rectangle)
+  int16_t baseW = 24;
+  int16_t baseH = (int16_t)(ARM_L1_BASE * ARM_SCALE);
+  tft.fillRect(ARM_BASE_X - baseW / 2, ARM_BASE_Y - baseH, baseW, baseH, ARM_COLOR_BASE);
+
+  // Draw links (thick cyan lines)
+  drawThickLine(armPts[1].x, armPts[1].y, armPts[2].x, armPts[2].y, ARM_COLOR_LINK);
+  drawThickLine(armPts[2].x, armPts[2].y, armPts[3].x, armPts[3].y, ARM_COLOR_LINK);
+  drawThickLine(armPts[3].x, armPts[3].y, armPts[4].x, armPts[4].y, ARM_COLOR_LINK);
+
+  // Draw joints (yellow circles with black outline)
+  for (int i = 1; i <= 4; i++) {
+    tft.fillCircle(armPts[i].x, armPts[i].y, JOINT_RADIUS, ARM_COLOR_JOINT);
+    tft.drawCircle(armPts[i].x, armPts[i].y, JOINT_RADIUS, TFT_BLACK);
+  }
+
+  // Draw gripper
+  float gripNorm = fabsf(normPos(vizPositions[5]));  // [0..1] openness
+  uint16_t gripColor = (gripNorm > 0.25f) ? ARM_COLOR_GRIPPER : ARM_COLOR_GRIPPER_CLOSED;
+
+  // Gripper spread angle (0..20 degrees based on openness)
+  float spread = gripNorm * 20.0f * DEG2RAD;
+
+  // Wrist absolute angle for gripper orientation
+  float wristAngle = normPos(vizPositions[1]) * 100.0f * DEG2RAD
+                   + normPos(vizPositions[2]) * 100.0f * DEG2RAD
+                   + normPos(vizPositions[3]) * 100.0f * DEG2RAD;
+
+  int16_t gx = armPts[4].x;
+  int16_t gy = armPts[4].y;
+
+  // Two gripper fingers
+  float a1 = wristAngle + spread;
+  float a2 = wristAngle - spread;
+  int16_t g1x = gx + (int16_t)(GRIPPER_LEN * sinf(a1));
+  int16_t g1y = gy - (int16_t)(GRIPPER_LEN * cosf(a1));
+  int16_t g2x = gx + (int16_t)(GRIPPER_LEN * sinf(a2));
+  int16_t g2y = gy - (int16_t)(GRIPPER_LEN * cosf(a2));
+
+  tft.drawLine(gx, gy, g1x, g1y, gripColor);
+  tft.drawLine(gx, gy, g2x, g2y, gripColor);
+
+  // Small white dot at gripper center
+  tft.fillCircle(gx, gy, 2, TFT_WHITE);
+}
+
+#endif // ENABLE_ARM_VIZ
+
 // ===================== Display Helpers =====================
 void initDisplay() {
   pinMode(5, OUTPUT); digitalWrite(5, HIGH);
@@ -257,6 +420,11 @@ void updateDisplayPC(bool connected, const char* ip) {
 }
 
 void addDisplayMessage(const char* msg) {
+  // Always log to serial for debugging
+  Serial.println(msg);
+
+#ifndef ENABLE_ARM_VIZ
+  // Scroll message text on screen only when arm visualization is disabled
   int idx = (msgBuf.head + msgBuf.count) % MSG_BUF_SIZE;
   strncpy(msgBuf.lines[idx], msg, 40);
   msgBuf.lines[idx][40] = '\0';
@@ -266,12 +434,13 @@ void addDisplayMessage(const char* msg) {
 
   // Redraw message area
   tft.fillRect(0, DISP_Y_MSG, 240, 240 - DISP_Y_MSG, TFT_BLACK);
-  
+
   int visibleLines = min(msgBuf.count, DISP_MSG_LINES);
   for (int i = 0; i < visibleLines; i++) {
     int bufIdx = (msgBuf.head + i) % MSG_BUF_SIZE;
     drawStr(0, DISP_Y_MSG + i * LINE_HEIGHT, msgBuf.lines[bufIdx], TFT_WHITE, TFT_BLACK);
   }
+#endif
 }
 
 void addDisplayMessage(String msg) {
@@ -349,6 +518,16 @@ bool syncReadPositions(int outPositions[]) {
 void sendObservation() {
   int poses[NUM_MOTORS];
   bool ok = syncReadPositions(poses);
+
+#ifdef ENABLE_ARM_VIZ
+  if (ok) {
+    for (int i = 0; i < NUM_MOTORS; i++) {
+      if (poses[i] >= 0) vizPositions[i] = poses[i];
+    }
+    vizPositionsValid = true;
+  }
+#endif
+
   StaticJsonDocument<512> resp;
   for (int i = 0; i < NUM_MOTORS; i++) {
     resp[MOTOR_NAMES[i]] = (poses[i] < 0) ? -1 : poses[i];
@@ -563,6 +742,16 @@ void loop() {
     else {
       addDisplayMessage((String("Unknown: ") + cmd).c_str());
     }
+  }
+#endif
+
+#ifdef ENABLE_ARM_VIZ
+  // Update arm visualization at ~10Hz (independent of command processing)
+  static unsigned long lastArmDrawMs = 0;
+  unsigned long armNow = millis();
+  if (armNow - lastArmDrawMs >= 100) {
+    lastArmDrawMs = armNow;
+    drawArm();
   }
 #endif
 }
