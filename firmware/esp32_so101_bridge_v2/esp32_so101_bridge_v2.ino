@@ -155,6 +155,9 @@ ArmPoint armPts[5];
 
 const float DEG2RAD = PI / 180.0f;
 
+// Cached absolute wrist angle (for gripper orientation)
+float wristAbsAngle = 0.0f;
+
 #endif // ENABLE_ARM_VIZ
 
 // ===================== GT30L32S4W Font Functions =====================
@@ -253,6 +256,7 @@ inline float normPos(int idx, int pos) {
 }
 
 // Compute screen coordinates of all arm joints from servo positions
+// Coordinate system: 0° = horizontal right (+X), +90° = vertical up (-Y)
 void updateArmGeometry(const int positions[]) {
   // Base center bottom
   armPts[0].x = ARM_BASE_X;
@@ -262,28 +266,35 @@ void updateArmGeometry(const int positions[]) {
   armPts[1].x = ARM_BASE_X;
   armPts[1].y = ARM_BASE_Y - (int16_t)(ARM_L1_BASE * ARM_SCALE);
 
-  // Joint angles: 0 degrees = straight UP (screen -Y direction)
-  // Positive angle = tilt BACKWARD (toward right in typical side view)
-  // Negative angle = tilt FORWARD (toward left)
-  float a1 = normPos(1, positions[1]) * 100.0f * DEG2RAD;   // shoulder lift
-  float a2 = normPos(2, positions[2]) * 100.0f * DEG2RAD;   // elbow flex (relative)
-  float a3 = normPos(3, positions[3]) * 100.0f * DEG2RAD;   // wrist flex (relative)
+  // shoulder_lift: mid(2014) = horizontal (0°), range ±90°
+  // min(831) = vertical down (-90°), max(3217) = vertical up (+90°)
+  float absA1 = normPos(1, positions[1]) * 90.0f * DEG2RAD;
 
-  float absA1 = a1;
-  float absA2 = absA1 + a2;
-  float absA3 = absA2 + a3;
+  // elbow_flex: relative to upper arm.
+  // min(929) = 0° (folded back), mid(2008) = 90° (perpendicular down),
+  // max(3128) = 180° (straight, continuing upper arm direction)
+  float elbowRel = (1.0f + normPos(2, positions[2])) * 90.0f * DEG2RAD;
+  float absA2 = absA1 + elbowRel;
+
+  // wrist_flex: relative to forearm.
+  // mid(2052) = aligned with forearm (0°), range ±90°
+  float wristRel = normPos(3, positions[3]) * 90.0f * DEG2RAD;
+  float absA3 = absA2 + wristRel;
+
+  // Cache for gripper orientation
+  wristAbsAngle = absA3;
 
   // Upper arm end = elbow
-  armPts[2].x = armPts[1].x + (int16_t)(ARM_L2_UPPER * ARM_SCALE * sinf(absA1));
-  armPts[2].y = armPts[1].y - (int16_t)(ARM_L2_UPPER * ARM_SCALE * cosf(absA1));
+  armPts[2].x = armPts[1].x + (int16_t)(ARM_L2_UPPER * ARM_SCALE * cosf(absA1));
+  armPts[2].y = armPts[1].y - (int16_t)(ARM_L2_UPPER * ARM_SCALE * sinf(absA1));
 
   // Forearm end = wrist flex joint
-  armPts[3].x = armPts[2].x + (int16_t)(ARM_L3_FORE * ARM_SCALE * sinf(absA2));
-  armPts[3].y = armPts[2].y - (int16_t)(ARM_L3_FORE * ARM_SCALE * cosf(absA2));
+  armPts[3].x = armPts[2].x + (int16_t)(ARM_L3_FORE * ARM_SCALE * cosf(absA2));
+  armPts[3].y = armPts[2].y - (int16_t)(ARM_L3_FORE * ARM_SCALE * sinf(absA2));
 
   // Gripper center
-  armPts[4].x = armPts[3].x + (int16_t)(ARM_L4_WRIST * ARM_SCALE * sinf(absA3));
-  armPts[4].y = armPts[3].y - (int16_t)(ARM_L4_WRIST * ARM_SCALE * cosf(absA3));
+  armPts[4].x = armPts[3].x + (int16_t)(ARM_L4_WRIST * ARM_SCALE * cosf(absA3));
+  armPts[4].y = armPts[3].y - (int16_t)(ARM_L4_WRIST * ARM_SCALE * sinf(absA3));
 }
 
 // Draw thick line by drawing the main line plus small offsets
@@ -325,16 +336,18 @@ void drawArm() {
   }
 
   // Draw gripper
-  float gripNorm = fabsf(normPos(5, vizPositions[5]));  // [0..1] openness
-  uint16_t gripColor = (gripNorm > 0.25f) ? ARM_COLOR_GRIPPER : ARM_COLOR_GRIPPER_CLOSED;
+  // gripper min(2040)=closed, max(3213)=open (Leader calibration)
+  // Map to [0..1] where 0=closed, 1=open
+  float gripNorm = (vizPositions[5] - 2040.0f) / (3213.0f - 2040.0f);
+  if (gripNorm < 0.0f) gripNorm = 0.0f;
+  if (gripNorm > 1.0f) gripNorm = 1.0f;
+  uint16_t gripColor = (gripNorm > 0.30f) ? ARM_COLOR_GRIPPER : ARM_COLOR_GRIPPER_CLOSED;
 
   // Gripper spread angle (0..20 degrees based on openness)
   float spread = gripNorm * 20.0f * DEG2RAD;
 
-  // Wrist absolute angle for gripper orientation
-  float wristAngle = normPos(1, vizPositions[1]) * 100.0f * DEG2RAD
-                   + normPos(2, vizPositions[2]) * 100.0f * DEG2RAD
-                   + normPos(3, vizPositions[3]) * 100.0f * DEG2RAD;
+  // Use cached wrist absolute angle
+  float wristAngle = wristAbsAngle;
 
   int16_t gx = armPts[4].x;
   int16_t gy = armPts[4].y;
@@ -342,10 +355,10 @@ void drawArm() {
   // Two gripper fingers
   float a1 = wristAngle + spread;
   float a2 = wristAngle - spread;
-  int16_t g1x = gx + (int16_t)(GRIPPER_LEN * sinf(a1));
-  int16_t g1y = gy - (int16_t)(GRIPPER_LEN * cosf(a1));
-  int16_t g2x = gx + (int16_t)(GRIPPER_LEN * sinf(a2));
-  int16_t g2y = gy - (int16_t)(GRIPPER_LEN * cosf(a2));
+  int16_t g1x = gx + (int16_t)(GRIPPER_LEN * cosf(a1));
+  int16_t g1y = gy - (int16_t)(GRIPPER_LEN * sinf(a1));
+  int16_t g2x = gx + (int16_t)(GRIPPER_LEN * cosf(a2));
+  int16_t g2y = gy - (int16_t)(GRIPPER_LEN * sinf(a2));
 
   tft.drawLine(gx, gy, g1x, g1y, gripColor);
   tft.drawLine(gx, gy, g2x, g2y, gripColor);
