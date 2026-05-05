@@ -9,8 +9,8 @@
  *
  * To select mode, uncomment ONE of the following lines before flashing:
  */
-// #define LEADER_MODE
-#define FOLLOWER_MODE
+#define LEADER_MODE
+//#define FOLLOWER_MODE
 
 #ifndef LEADER_MODE
 #ifndef FOLLOWER_MODE
@@ -104,6 +104,13 @@ const char*   MOTOR_NAMES[] = {
 };
 const int NUM_MOTORS = 6;
 
+// ===================== Calibration Data (from L07252802.json / R12552802.json) =====================
+// Mid-point and half-range for each servo, averaged from Leader & Follower calibration
+// Used to normalize servo positions to [-1..1] for accurate visualization
+// Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
+const int SERVO_MID[]       = {2112, 2014, 2008, 2052, 2048, 2689};  // mid = (min+max)/2
+const int SERVO_RANGE_HALF[] = {1330, 1183, 1101, 1158, 2048,  656};  // half of (max-min)
+
 // ===================== Arm Visualization Configuration =====================
 // Comment out to disable arm visualization and restore message scrolling
 #define ENABLE_ARM_VIZ
@@ -137,8 +144,8 @@ const int NUM_MOTORS = 6;
 #define JOINT_RADIUS        4
 #define GRIPPER_LEN         14
 
-// Current servo positions cached for visualization
-int vizPositions[NUM_MOTORS] = {2048, 2048, 2048, 2048, 2048, 2048};
+// Current servo positions cached for visualization — init to mid (rest pose)
+int vizPositions[NUM_MOTORS] = {2112, 2014, 2008, 2052, 2048, 2689};
 bool vizPositionsValid = false;
 
 // Computed joint screen coordinates
@@ -238,10 +245,11 @@ int strPixelWidth(const char* str) {
 
 #ifdef ENABLE_ARM_VIZ
 
-// Normalize servo position [0..4095] to [-1..1] around mid-point
-inline float normPos(int pos) {
+// Normalize servo position to [-1..1] using calibrated mid-point and range
+// idx: 0=shoulder_pan, 1=shoulder_lift, 2=elbow_flex, 3=wrist_flex, 4=wrist_roll, 5=gripper
+inline float normPos(int idx, int pos) {
   if (pos < 0) return 0.0f;
-  return (pos - 2048) / 2048.0f;
+  return (pos - SERVO_MID[idx]) / (float)SERVO_RANGE_HALF[idx];
 }
 
 // Compute screen coordinates of all arm joints from servo positions
@@ -257,9 +265,9 @@ void updateArmGeometry(const int positions[]) {
   // Joint angles: 0 degrees = straight UP (screen -Y direction)
   // Positive angle = tilt BACKWARD (toward right in typical side view)
   // Negative angle = tilt FORWARD (toward left)
-  float a1 = normPos(positions[1]) * 100.0f * DEG2RAD;   // shoulder lift
-  float a2 = normPos(positions[2]) * 100.0f * DEG2RAD;   // elbow flex (relative)
-  float a3 = normPos(positions[3]) * 100.0f * DEG2RAD;   // wrist flex (relative)
+  float a1 = normPos(1, positions[1]) * 100.0f * DEG2RAD;   // shoulder lift
+  float a2 = normPos(2, positions[2]) * 100.0f * DEG2RAD;   // elbow flex (relative)
+  float a3 = normPos(3, positions[3]) * 100.0f * DEG2RAD;   // wrist flex (relative)
 
   float absA1 = a1;
   float absA2 = absA1 + a2;
@@ -317,16 +325,16 @@ void drawArm() {
   }
 
   // Draw gripper
-  float gripNorm = fabsf(normPos(vizPositions[5]));  // [0..1] openness
+  float gripNorm = fabsf(normPos(5, vizPositions[5]));  // [0..1] openness
   uint16_t gripColor = (gripNorm > 0.25f) ? ARM_COLOR_GRIPPER : ARM_COLOR_GRIPPER_CLOSED;
 
   // Gripper spread angle (0..20 degrees based on openness)
   float spread = gripNorm * 20.0f * DEG2RAD;
 
   // Wrist absolute angle for gripper orientation
-  float wristAngle = normPos(vizPositions[1]) * 100.0f * DEG2RAD
-                   + normPos(vizPositions[2]) * 100.0f * DEG2RAD
-                   + normPos(vizPositions[3]) * 100.0f * DEG2RAD;
+  float wristAngle = normPos(1, vizPositions[1]) * 100.0f * DEG2RAD
+                   + normPos(2, vizPositions[2]) * 100.0f * DEG2RAD
+                   + normPos(3, vizPositions[3]) * 100.0f * DEG2RAD;
 
   int16_t gx = armPts[4].x;
   int16_t gy = armPts[4].y;
@@ -561,9 +569,17 @@ void setup() {
   int found = 0;
   for (int i = 0; i < NUM_MOTORS; i++) {
     int pos = st.ReadPos(MOTOR_IDS[i]);
-    if (pos >= 0) { Serial.printf("[V2] ID=%d pos=%d\n", MOTOR_IDS[i], pos); found++; }
-    else { Serial.printf("[V2] ID=%d no response\n", MOTOR_IDS[i]); }
+    if (pos >= 0) { 
+      Serial.printf("[V2] ID=%d pos=%d\n", MOTOR_IDS[i], pos); 
+      found++; 
+      vizPositions[i] = pos;  // save for arm visualization
+    }
+    else { 
+      Serial.printf("[V2] ID=%d no response\n", MOTOR_IDS[i]); 
+      vizPositions[i] = SERVO_MID[i];  // fallback to mid
+    }
   }
+  if (found > 0) vizPositionsValid = true;
   Serial.printf("[V2] Found %d/%d servos\n", found, NUM_MOTORS);
   addDisplayMessage((String("Servos ") + found + "/" + NUM_MOTORS).c_str());
   if (found == 0) addDisplayMessage("WARNING: No servos!");
