@@ -146,6 +146,13 @@ void updateDisplayStatus(const char* label, const char* value, uint16_t color) {
   tft.print(value);
 }
 
+void updateDisplayStatus(const char* status, uint16_t color) {
+  tft.fillRect(0, DISP_Y_STATUS, 240, 18, TFT_BLACK);
+  tft.setTextColor(color, TFT_BLACK);
+  tft.setCursor(0, DISP_Y_STATUS);
+  tft.print(status);
+}
+
 void addDisplayMessage(const char* msg) {
   // Add to ring buffer
   int idx = (msgBuf.head + msgBuf.count) % MSG_BUF_SIZE;
