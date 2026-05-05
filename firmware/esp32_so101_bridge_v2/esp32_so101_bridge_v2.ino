@@ -9,8 +9,8 @@
  *
  * To select mode, uncomment ONE of the following lines before flashing:
  */
-#define LEADER_MODE
-//#define FOLLOWER_MODE
+// #define LEADER_MODE
+#define FOLLOWER_MODE
 
 #ifndef LEADER_MODE
 #ifndef FOLLOWER_MODE
@@ -659,49 +659,66 @@ unsigned long lastStreamMs = 0;
 const unsigned long streamIntervalMs = 1000 / LEADER_STREAM_HZ;
 #endif
 
+// Connection state tracking (separate from WiFiClient bool which returns connected())
+static bool cmdWasConnected = false;
+static bool obsWasConnected = false;
+
 void loop() {
-  // CMD client (8888)
-  if (!clientCmd || !clientCmd.connected()) {
-    if (clientWasConnected) {
-      clientWasConnected = false;
-      Serial.println("CMD DISCONNECTED");
-      addDisplayMessage("CMD disconnected");
+  // ---- CMD client (8888) ----
+  // Accept new connections
+  WiFiClient ncCmd = serverCmd.available();
+  if (ncCmd) {
+    clientCmd = ncCmd;
+    clientCmd.setNoDelay(true);
+    cmdWasConnected = true;
+    clientWasConnected = true;  // keep for backward compat
+    Serial.println("CMD connected: " + clientCmd.remoteIP().toString());
+    addDisplayMessage((String("CMD: ") + clientCmd.remoteIP().toString()).c_str());
 #ifdef FOLLOWER_MODE
-      updateDisplayPC(false, "");
-      disableAllTorque();
+    updateDisplayPC(true, clientCmd.remoteIP().toString().c_str());
 #endif
-    }
-    WiFiClient nc = serverCmd.available();
-    if (nc) {
-      clientCmd = nc;
-      clientCmd.setNoDelay(true);
-      clientWasConnected = true;
-      Serial.println("CMD connected: " + clientCmd.remoteIP().toString());
-      addDisplayMessage((String("CMD: ") + clientCmd.remoteIP().toString()).c_str());
+  }
+
+  // Detect CMD disconnection (FOLLOWER mode)
+  bool cmdConnected = clientCmd.connected();
+  if (!cmdConnected && cmdWasConnected) {
+    cmdWasConnected = false;
+    clientWasConnected = false;
+    Serial.println("CMD DISCONNECTED");
+    addDisplayMessage("CMD disconnected");
 #ifdef FOLLOWER_MODE
-      updateDisplayPC(true, clientCmd.remoteIP().toString().c_str());
-#endif
-    }
-  }
-  
-  // OBS client (8889)
-  if (!clientObs || !clientObs.connected()) {
-    WiFiClient nc = serverObs.available();
-    if (nc) {
-      clientObs = nc;
-      clientObs.setNoDelay(true);
-      Serial.println("OBS connected: " + clientObs.remoteIP().toString());
-      addDisplayMessage((String("OBS: ") + clientObs.remoteIP().toString()).c_str());
-#ifdef LEADER_MODE
-      updateDisplayPC(true, clientObs.remoteIP().toString().c_str());
-#endif
-    }
-  }
-#ifdef LEADER_MODE
-  if (clientObs && !clientObs.connected()) {
     updateDisplayPC(false, "");
-  }
+    disableAllTorque();
 #endif
+  }
+
+  // ---- OBS client (8889) ----
+  // Accept new connections
+  WiFiClient ncObs = serverObs.available();
+  if (ncObs) {
+    clientObs = ncObs;
+    clientObs.setNoDelay(true);
+    obsWasConnected = true;
+    Serial.println("OBS connected: " + clientObs.remoteIP().toString());
+    addDisplayMessage((String("OBS: ") + clientObs.remoteIP().toString()).c_str());
+#ifdef LEADER_MODE
+    updateDisplayPC(true, clientObs.remoteIP().toString().c_str());
+#endif
+  }
+
+  // Detect OBS disconnection (LEADER mode)
+  // IMPORTANT: cannot use "clientObs &&" because WiFiClient::operator bool()
+  // returns connected(), so when disconnected clientObs evaluates to false
+  // and the && short-circuits, never calling !clientObs.connected().
+  bool obsConnected = clientObs.connected();
+  if (!obsConnected && obsWasConnected) {
+    obsWasConnected = false;
+    Serial.println("OBS DISCONNECTED");
+    addDisplayMessage("OBS disconnected");
+#ifdef LEADER_MODE
+    updateDisplayPC(false, "");
+#endif
+  }
 
 #ifdef LEADER_MODE
   unsigned long now = millis();
