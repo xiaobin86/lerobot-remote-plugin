@@ -266,9 +266,9 @@ void updateArmGeometry(const int positions[]) {
   armPts[1].x = ARM_BASE_X;
   armPts[1].y = ARM_BASE_Y - (int16_t)(ARM_L1_BASE * ARM_SCALE);
 
-  // shoulder_lift: mid(2014) = horizontal (0°), range ±90°
-  // min(831) = vertical down (-90°), max(3217) = vertical up (+90°)
-  float absA1 = normPos(1, positions[1]) * 90.0f * DEG2RAD;
+  // shoulder_lift: mid(2014) = vertical up (90°)
+  // min(831) = horizontal forward (0°), max(3217) = horizontal backward (180°)
+  float absA1 = (1.0f + normPos(1, positions[1])) * 90.0f * DEG2RAD;
 
   // elbow_flex: relative to upper arm.
   // min(929) = 0° (folded back), mid(2008) = 90° (perpendicular down),
