@@ -61,19 +61,18 @@ lerobot-robot-remote-so101/
 ├── README.md                               # This file
 ├── lerobot_robot_remote_so101/             # Python plugin source
 │   ├── __init__.py
-│   ├── config.py                           # RemoteSO101Config
-│   └── remote_so101.py                     # RemoteSO101 Robot implementation
+│   ├── config.py                           # RemoteSO101Config + RemoteSO101LeaderConfig
+│   ├── remote_so101.py                     # RemoteSO101 Robot (follower)
+│   └── remote_so101_leader.py              # RemoteSO101Leader Teleoperator (leader)
 └── firmware/
-    ├── esp32_so101_bridge_v2/              # ESP32 Arduino sketch (optimized)
-    │   └── esp32_so101_bridge_v2.ino
-    └── test_serial_only/                   # Minimal serial test
-        └── test_serial_only.ino
+    └── esp32_so101_bridge_v2/              # ESP32 Arduino sketch (v3 dual-mode)
+        ├── esp32_so101_bridge_v2.ino       # Main firmware (Leader/Follower switch)
+        └── User_Setup.h                      # TFT_eSPI config for ST7789 display
 ```
 
 **Branch model:**
-- `main`    – stable releases
-- `develop` – integration branch
-- `feature/remote-so101-replay` – current development branch (where this feature lives)
+- `main`    – stable releases (merged from feature branches)
+- `feature/remote-so101-bimanual` – bimanual Leader/Follower + display support
 
 To go back to the state **before** this extension existed, simply uninstall the pip package:
 ```bash
