@@ -12,7 +12,6 @@
  *
  * To select mode, uncomment ONE of the following lines before flashing:
  */
-
 //#define LEADER_MODE
 #define FOLLOWER_MODE
 

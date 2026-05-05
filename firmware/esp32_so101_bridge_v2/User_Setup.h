@@ -19,7 +19,7 @@
 #define TFT_BL    5
 
 // Color byte order (critical!)
-#define TFT_RGB_ORDER TFT_RGB
+#define TFT_RGB_ORDER TFT_BGR
 
 // LCD polarity (IPS screen usually needs)
 #define TFT_INVERSION_ON
